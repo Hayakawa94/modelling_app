@@ -13,8 +13,6 @@ normalize_feature <- function(feature, min_val, max_val) {
 
 # Function to create splines
 create_splines <- function(df, splines_dt) {
-  tryCatch({
-    # Garbage collection to free up memory
     gc()
     
     # Ensure splines_dt is distinct
@@ -34,16 +32,10 @@ create_splines <- function(df, splines_dt) {
     
     # Return the overlay features data table without the index column
     return(overlay_fts_dt %>% select(-idx))
-  }, error = function(e) {
-    message("Error in create_splines: ", e$message)
-    return(NULL)
-  })
 }
 
 # Function to fit GLM model
 glm_fit <- function(glm_train, splines_dt, response, base, weight, fam, pmml_max_band = 2000) {
-  tryCatch({
-    
     # Ensure splines_dt is distinct
     splines_dt <- splines_dt %>% distinct()
     
@@ -221,10 +213,6 @@ glm_fit <- function(glm_train, splines_dt, response, base, weight, fam, pmml_max
       LP_models = LP_models
     ))
 gc()
-  }, error = function(e) {
-    message("Error in glm_fit: ", e$message)
-    return(NULL)
-  })
 }
 
 
@@ -232,7 +220,6 @@ gc()
 plot_fit <- function(ft, actual, pred, challenger, weight, ft_name, rebase = TRUE, point_size = 2, lwd = 0.8, 
                      fit_lines = c("CA_challenger", "obs", "CU_challenger", "CM"),
                      band_ft = TRUE, band_method = "equal", nbreaks = 20, indiv_eff) {
-  tryCatch({
     # Rebase predictions if required
     if (rebase) {
       pred <- pred * (sum(actual) / sum(pred * weight)) # rebase
@@ -312,17 +299,13 @@ plot_fit <- function(ft, actual, pred, challenger, weight, ft_name, rebase = TRU
       scale_y_continuous(name = "", sec.axis = sec_axis(~ . * max(df[df$variable == "weight"]$value), name = "weight"))
     
     return(ave_df)
-  }, error = function(e) {
-    message("Error in plot_fit: ", e$message)
-    return(NULL)
-  })
+
 }
 
 
 
 # Function to calculate AvE
 calc_ave <- function(ft, actual, pred, weight, challenger, factor_consistency, ft_name, rebase = FALSE, band_ft = TRUE, nbreaks = 20, band_method = "equal") {
-  tryCatch({
     # Convert to data.table and perform garbage collection
     gc()
     
@@ -369,16 +352,10 @@ calc_ave <- function(ft, actual, pred, weight, challenger, factor_consistency, f
     
     return(list(ave_df = ave_df, ave_plot = p, rebase_data = if (rebase) rb_factor else NULL))
     gc()
-  }, error = function(e) {
-    message("Error in calc_ave: ", e$message)
-    return(NULL)
-  })
 }
 
 # Function to apply cosmetic changes to the plot
 cosmetic_changes <- function(p, alpha_pt = 1, alpha_line = 0.5, size_pt = 2, size_line = 1, fit_loess = TRUE, smooth_strength = 0.4, control_yaxis = TRUE, upper_lim = 2, lower_lim = 0) {
-  tryCatch({
-    # Perform garbage collection
     gc()
     
     # Adjust point and line aesthetics
@@ -413,10 +390,6 @@ cosmetic_changes <- function(p, alpha_pt = 1, alpha_line = 0.5, size_pt = 2, siz
     
     return(list(ave_plot = pout, smooth_data = smooth_data))
     gc()
-  }, error = function(e) {
-    message("Error in cosmetic_changes: ", e$message)
-    return(NULL)
-  })
 }
 
 

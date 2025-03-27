@@ -1,5 +1,6 @@
 
-source("H:/Restricted Share/DA P&U/Tech Modelling/Users/Khoa/RPMtools/RPMtools.R")
+
+source(glue("{here::here()}/RPMtools/RPMtools.R"))
 source(glue("{here::here()}/1_Feature_summary.R"))
 source(glue("{here::here()}/2_EDA.R"))
 source(glue("{here::here()}/3_Boruta_feature_selection.R"))
@@ -12,20 +13,19 @@ source(glue("{here::here()}/UI.R"))
 
 
 server <- function(input, output, session) {
-  
+  print("processing_data")
   train <- if(length(train %>% select_if(is.factor)%>% names) >0   ){
-    cbind(train , one_hot(train %>% select_if(is.factor)))
+    cbind(train , one_hot(train %>% select_if(is.factor) , dropUnusedLevels = T))
   }else{
     train
   }
   
-  
   test <- if(length(test %>% select_if(is.factor)%>% names) >0   ){
-    cbind(test , one_hot(test %>% select_if(is.factor)))
+    cbind(test , one_hot(test %>% select_if(is.factor), dropUnusedLevels = T))
   }else{
     test
   }
-
+  print("processing_completed")
 ################### Feature Summary ##############################
   
   # Feature specification dataframe
@@ -44,8 +44,19 @@ server <- function(input, output, session) {
     input$model
   }, {
     print(glue("configuring {input$model}..."))
-    req(input$model)
+    selected_fts <- hot_to_r(input$ft_table)$Features[which(hot_to_r(input$ft_table)$Use_Feature == TRUE)]
     
+    dt_sum <- KT_summarise_dataframe(train %>% select(selected_fts))
+    dt_sum %>% filter(Feature %in% selected_fts) %>%
+      filter(Proportion_Missing >=0.9999) %>% select(Feature) %>% pull  -> missing_features
+    selected_fts <- if (length(missing_features)>0){
+      print(glue("{missing_features} will be excluded from modelling data due to 100% missing"))
+      setdiff(selected_fts, missing_features)
+    }else{
+      selected_fts
+    }
+ 
+
     weight <- model_spec[[input$model]]$exposure
     response <- model_spec[[input$model]]$response
     objective <- model_spec[[input$model]]$objective
@@ -61,9 +72,6 @@ server <- function(input, output, session) {
     test_weight <- test[[weight]]
     test$none <- "NA"
     
-    ft_spec_table <- hot_to_r(input$ft_table)
-    selected_fts <- ft_spec_table$Features[which(ft_spec_table$Use_Feature == TRUE)]
-    
     return(list(
       train = train %>% select(c("none", selected_fts, weight, response)),
       train_y = train_y,
@@ -75,7 +83,8 @@ server <- function(input, output, session) {
       objective = objective,
       eval_metric = eval_metric,
       weight = weight,
-      response = response
+      response = response,
+      dt_sum=dt_sum
     ))
   })
   
@@ -84,7 +93,7 @@ server <- function(input, output, session) {
     req(config())
     print('Processing summarise data')
     
-    dt_sum <- summarise_dataframe(config()$train %>% select(config()$selected_fts))
+    # dt_sum <- KT_summarise_dataframe(config()$train %>% select(config()$selected_fts))
     total_weighted_response <- sum(config()$train_y * config()$train_weight)
     total_exposure <- sum(config()$train_weight)
     weighted_avg_response <- total_weighted_response / total_exposure
@@ -94,7 +103,7 @@ server <- function(input, output, session) {
     min_weight <- min(config()$train_weight)
     
     list(
-      dt_sum = dt_sum,
+      dt_sum = config()$dt_sum,
       Claim_data = data.table(
         total_weighted_response,
         weighted_avg_response,
@@ -454,15 +463,17 @@ server <- function(input, output, session) {
   # Save Boruta result to file
   observe({
     req(Boruta_result())
-    print("Saving Boruta result")
-    saveRDS(list(
-      result = Boruta_result(),
-      Boruta_max_run = input$Boruta_max_run,
-      Boruta_eta = input$Boruta_eta,
-      Boruta_max_depth = input$Boruta_max_depth,
-      Boruta_nrounds = input$Boruta_nrounds
-    ), glue("{input$file_name_boruta}.rds"))
-    print("Finished saving Boruta result")
+    isolate({
+      print("Saving Boruta result")
+      saveRDS(list(
+        result = Boruta_result(),
+        Boruta_max_run = input$Boruta_max_run,
+        Boruta_eta = input$Boruta_eta,
+        Boruta_max_depth = input$Boruta_max_depth,
+        Boruta_nrounds = input$Boruta_nrounds
+      ), glue("{input$file_name_boruta}.rds"))
+      print("Finished saving Boruta result")
+    })
   })
   
   # Load Boruta result from file
@@ -612,7 +623,6 @@ server <- function(input, output, session) {
   
   # Function to save Tuning tab state
   save_tuning <- function() {
-    tryCatch({
       file_name <- paste0(input$file_name_tuning, ".rds")
       
       saveRDS(list(
@@ -635,14 +645,11 @@ server <- function(input, output, session) {
       saveRDS(tune_result()$best_params, glue("{input$file_name_tuning}_best_param.rds"))
       
       output$action_message_tuning <- renderText("Tuning state has been saved.")
-    }, error = function(e) {
-      output$action_message_tuning <- renderText(paste("Error in saving tuning state:", e$message))
-    })
+
   }
   
   # Function to load Tuning tab state
   load_tuning <- function() {
-    tryCatch({
       file_name <- paste0(input$file_name_tuning, ".rds")
       if (file.exists(file_name)) {
         tune_result <- readRDS(file_name)
@@ -702,14 +709,11 @@ server <- function(input, output, session) {
       } else {
         output$action_message_tuning <- renderText("File not found.")
       }
-    }, error = function(e) {
-      output$action_message_tuning <- renderText(paste("Error in loading tuning state:", e$message))
-    })
+
   }
   
   # Function to load best parameters from Tuning tab state
   load_tuning_best_param <- function() {
-    tryCatch({
       file_name <- glue("{input$file_name_tuning}_best_param.rds")
       req(file.exists(file_name))
       
@@ -730,9 +734,7 @@ server <- function(input, output, session) {
       } else {
         output$action_message_tuning <- renderText("File not found.")
       }
-    }, error = function(e) {
-      output$action_message_tuning <- renderText(paste("Error in loading best parameters:", e$message))
-    })
+
   }
   
   
@@ -790,7 +792,6 @@ server <- function(input, output, session) {
   
   # Event reactive to train the model
   train_result <- eventReactive(input$train, {
-    tryCatch({
       print('Begin training model')
       gc()
       
@@ -831,10 +832,6 @@ server <- function(input, output, session) {
         monotone_constraints = monotone_constraints,
         early_stopping_rounds = early_stopping_rounds
       )
-    }, error = function(e) {
-      print(paste("Error in training model:", e$message))
-      NULL
-    })
   })
   
   # Reactive value to store trained model
@@ -845,7 +842,6 @@ server <- function(input, output, session) {
   
   # Reactive to generate SHAP plots
   SHAP_plots <- reactive({
-    tryCatch({
       KT_plot_shap(
         sv = shap_values()$main_effect$shap_main_effect[[input$SHAP_ft]],
         ft = shap_values()$main_effect$pred_data_main_effect[, input$SHAP_ft],
@@ -855,15 +851,10 @@ server <- function(input, output, session) {
         alpha = input$SHAP_alpha,
         sample_size = input$SHAP_sample_size
       )
-    }, error = function(e) {
-      print(paste("Error in generating SHAP plots:", e$message))
-      NULL
-    })
   })
   
   # Reactive to generate SHAP interaction plots
   SHAP_plots_X <- reactive({
-    tryCatch({
       loess_strength <- if (input$SHAP_X_Fit_loess) input$SHAP_smooth_strength else 0
       sv_X <- glue("{input$SHAP_X_ft1}.{input$SHAP_X_ft2}")
       
@@ -877,10 +868,7 @@ server <- function(input, output, session) {
         alpha = input$SHAP_alpha,
         sample_size = input$SHAP_sample_size
       )
-    }, error = function(e) {
-      print(paste("Error in generating SHAP interaction plots:", e$message))
-      NULL
-    })
+
   })
   
   # Observe changes in train result and update slider input
@@ -987,7 +975,6 @@ server <- function(input, output, session) {
   
   # Function to save Training tab state
   save_Training <- function() {
-    tryCatch({
       file_name <- paste0(input$file_name_Training, ".rds")
       saveRDS(list(
         train_eta = input$train_eta,
@@ -1009,14 +996,11 @@ server <- function(input, output, session) {
       ), file_name)
       
       output$action_message_training <- renderText("Training state has been saved.")
-    }, error = function(e) {
-      output$action_message_training <- renderText(paste("Error saving training state:", e$message))
-    })
+
   }
   
   # Function to load Training tab state
   load_Training <- function() {
-    tryCatch({
       file_name <- paste0(input$file_name_Training, ".rds")
       req(file.exists(file_name))
       loaded_state <- readRDS(file_name)
@@ -1122,53 +1106,32 @@ server <- function(input, output, session) {
       })
       
       output$action_message_training <- renderText("Training state has been loaded.")
-    }, error = function(e) {
-      output$action_message_training <- renderText(paste("Error loading training state:", e$message))
-    })
   }
   
   # Observe event to save PMML model
   observeEvent(input$train, {
-    tryCatch({
       req(train_result())
+    print("export_pmml")
       r2pmml::r2pmml(train_result()$model, glue("{input$file_name_Training}.pmml"), fmap = train_result()$pmml_fmap, response_name = "prediction")
-    }, error = function(e) {
-      output$action_message_training <- renderText(paste("Error saving PMML model:", e$message))
-    })
+
   })
   
   # Observe event to save training result
   observeEvent(train_result(), {
-    tryCatch({
       req(train_result())
       print("Saving trained result")
       save_Training()
       print("Finished saving trained result")
-    }, error = function(e) {
-      output$action_message_training <- renderText(paste("Error saving trained result:", e$message))
-    })
+
   })
   
   # Observe event to load training result
   observeEvent(input$load_Training, {
-    tryCatch({
       print("Loading trained result")
       load_Training()
-    }, error = function(e) {
-      output$action_message_training <- renderText(paste("Error loading trained result:", e$message))
-    })
+
   })
   
-  
-
-  
-  ################### GLM #####################################
-  
-  # Initialize reactive values
-  drawn_shapes <- reactiveVal(list())
-  x_range <- reactiveVal(NULL)
-  y_range <- reactiveVal(NULL)
-  y2_range <- reactiveVal(NULL)
   
   # Reactive file reader for base model
   base_model <- reactiveFileReader(
@@ -1178,28 +1141,49 @@ server <- function(input, output, session) {
       req(input$file_name_Training)  # Ensure input$file_name_Training is not NULL
       glue("{input$file_name_Training}.rds")  # Construct the file path
     }),
-    readFunc = readRDS
+    readFunc = function(filePath) {
+      tryCatch(
+        {
+          readRDS(filePath)
+        },
+        error = function(e) {
+          # Handle the error (e.g., log it, show a message, etc.)
+          message("Error reading RDS file: ", e$message)
+          NULL  # Return NULL or some default value
+        }
+      )
+    }
   )
   
   # Observe and load training data
   observe({
+    req(input$load_Training || input$train)
+    req(file.exists(glue("{input$file_name_Training}.rds")))
+    req(base_model())
     tryCatch({
-      req(input$load_Training || input$train)
-      req(file.exists(glue("{input$file_name_Training}.rds")))
-      req(base_model())
-      
-      model_output <- base_model()$model_output
-      shap_values(model_output$shap_values)
-      
-      ft_imp <- model_output$imp_plot$imp_shap$data$variable
-      updateSelectInput(session, "SHAP_ft", choices = ft_imp)
-      updateSelectInput(session, "SHAP_X_ft1", choices = ft_imp)
-      updateSelectInput(session, "SHAP_X_ft2", choices = ft_imp)
-      output$Shap_value_loaded <- renderText("Shap_Value loaded.")
+    model_output <- base_model()$model_output
+    shap_values(model_output$shap_values)
+    
+    ft_imp <- model_output$imp_plot$imp_shap$data$variable
+    updateSelectInput(session, "SHAP_ft", choices = ft_imp)
+    updateSelectInput(session, "SHAP_X_ft1", choices = ft_imp)
+    updateSelectInput(session, "SHAP_X_ft2", choices = ft_imp)
+    output$Shap_value_loaded <- renderText("Shap_Value loaded.")
     }, error = function(e) {
-      message("Error in observe: ", e$message)
+      message("Error in loading SHAP: ", e$message)
+      return(NULL)
     })
   })
+  
+  ################### GLM #####################################
+  
+  # Initialize reactive values
+  drawn_shapes <- reactiveVal(list())
+  x_range <- reactiveVal(NULL)
+  y_range <- reactiveVal(NULL)
+  y2_range <- reactiveVal(NULL)
+  
+
   
   # Event reactive for overlays
   overlays <- eventReactive({
@@ -1207,13 +1191,13 @@ server <- function(input, output, session) {
     input$Load_ave
     base_model()
   }, {
-    tryCatch({
       if (input$ignore_base_pred == TRUE) {
         base_pred <- 1
       } else {
         req(base_model())
         base_pred <- base_model()$model_output$pred
       }
+      req( drawn_shapes())
       fam <- model_spec[[input$model]]$fam
       splines_dt <- do.call(rbind, drawn_shapes())
       glm_train <- train[train[[config()$weight]] > 0] %>% select(unique(splines_dt$feature))
@@ -1223,15 +1207,12 @@ server <- function(input, output, session) {
       } else {
         return(NULL)
       }
-    }, error = function(e) {
-      message("Error in overlays: ", e$message)
-      return(NULL)
-    })
+
   })
   
   # Observe and update UI elements based on data
   observe({
-    tryCatch({
+      req(input$ft)
       data <- train[train[[config()$weight]] > 0][[input$ft]]
       unique_values <- length(unique(data))
       
@@ -1250,14 +1231,11 @@ server <- function(input, output, session) {
         show("glm_band_method")
         show("overlay_nbreaks")
       }
-    }, error = function(e) {
-      message("Error in observe: ", e$message)
-    })
+
   })
   
   # Reactive expression to generate fit plot
   fit_plot <- reactive({
-    tryCatch({
       # Determine base prediction
       if (input$ignore_base_pred == TRUE) {
         base_pred <- 1
@@ -1301,15 +1279,11 @@ server <- function(input, output, session) {
         indiv_eff = indiv_eff,
         band_method = input$glm_band_method
       )
-    }, error = function(e) {
-      message("Error in fit_plot: ", e$message)
-      return(NULL)
-    })
+
   })
   
   # Observe event to export lookup tables in PMML format
   observeEvent(input$lookup_pmml_export, {
-    tryCatch({
       req(overlays())
       exp_path <- glue("{getwd()}/{input$glm_overlay_out}_GLMpmml")
       if (!file.exists(exp_path)) {
@@ -1321,9 +1295,6 @@ server <- function(input, output, session) {
       print("Exporting lookup table in PMML format")
       KT_Export_tables_to_pmml(overlays()$lookup_tables, input$glm_overlay_out, export_path = exp_path)
       KT_export_to_excel(overlays()$band_logic_for_rdr, glue("{exp_path}/band_logic_for_rdr.xlsx"), withcolnames = FALSE)
-    }, error = function(e) {
-      message("Error in lookup_pmml_export: ", e$message)
-    })
   })
   
   # Render Plotly overlay plot
@@ -1483,7 +1454,7 @@ server <- function(input, output, session) {
   
   # Observe changes in input feature type and update UI elements accordingly
   observe({
-    tryCatch({
+
       if (!is.numeric(train[[input$ft]])) {
         updateCheckboxInput(session = session, "draw_mode", value = FALSE)
         hide("draw_mode")
@@ -1493,14 +1464,10 @@ server <- function(input, output, session) {
         show("draw_mode")
         show("reset")
       }
-    }, error = function(e) {
-      message("Error in observe: ", e$message)
-    })
   })
   
   # Observe event to undo shapes
   observeEvent(input$undo, {
-    tryCatch({
       req(input$undo_shapes)
       all_shapes <- drawn_shapes()
       for (ft in names(all_shapes)) {
@@ -1510,44 +1477,28 @@ server <- function(input, output, session) {
       }
       drawn_shapes(all_shapes)
       updateCheckboxGroupInput(session, "undo_shapes", choices = sort(do.call(rbind, all_shapes)$id))
-    }, error = function(e) {
-      message("Error in undo: ", e$message)
-    })
   })
   
   # Render table for GLM fit
   output$glm_fit <- renderTable({
-    tryCatch({
       all_shapes <- drawn_shapes()
       if (is.null(overlays())) {
         do.call(rbind, all_shapes) %>% select(-x0, -x1, -y0, -y1, -x1_lvl_name, -x0_lvl_name) %>% arrange(id)
       } else {
         do.call(rbind, all_shapes) %>% left_join(overlays()$fit, by = "id") %>% select(-x0, -x1, -y0, -y1, -x1_lvl_name, -x0_lvl_name) %>% arrange(id, estimate)
       }
-    }, error = function(e) {
-      message("Error in renderTable for glm_fit: ", e$message)
-      return(NULL)
-    })
   })
   
   # Render summary for GLM model
   output$glm_summary <- renderPrint({
-    tryCatch({
       req(overlays())
       summary(overlays()$model)
-    }, error = function(e) {
-      message("Error in renderPrint for glm_summary: ", e$message)
-    })
   })
   
   # Observe event to reset shapes
   observeEvent(input$reset, {
-    tryCatch({
       drawn_shapes(list())
       updateCheckboxGroupInput(session, "undo_shapes", choices = c())
-    }, error = function(e) {
-      message("Error in reset: ", e$message)
-    })
   })
   
   # Download handler for overlay fit
@@ -1556,31 +1507,23 @@ server <- function(input, output, session) {
       paste("drawn_shapes", Sys.Date(), ".csv", sep = "")
     },
     content = function(file) {
-      tryCatch({
         all_shapes <- drawn_shapes()
         combined_shapes <- do.call(rbind, all_shapes)
         write.csv(combined_shapes, file, row.names = FALSE)
-      }, error = function(e) {
-        message("Error in downloadHandler for overlayfit_download: ", e$message)
-      })
+
     }
   )
   
   # Observe event to save GLM model
   observeEvent(input$save_glm, {
-    tryCatch({
       req(glm_model_out())
       print("Saving GLM")
       saveRDS(glm_model_out(), file = paste0(input$glm_overlay_out, ".rds"))
       print("Done!")
-    }, error = function(e) {
-      message("Error in save_glm: ", e$message)
-    })
   })
   
   # Reactive expression for GLM model output
   glm_model_out <- reactive({
-    tryCatch({
       req(drawn_shapes(), overlays())
       base_pred <- if (input$ignore_base_pred == TRUE) {
         1
@@ -1589,15 +1532,10 @@ server <- function(input, output, session) {
         base_pred <- base_model()$model_output$pred
       }
       list(drawn_shapes = drawn_shapes(), undo_shapes = input$undo_shapes, pred = base_pred * overlays()$adj, glm_model_out = overlays())
-    }, error = function(e) {
-      message("Error in glm_model_out: ", e$message)
-      return(NULL)
-    })
   })
   
   # Observe event to load GLM model
   observeEvent(input$load_glm, {
-    tryCatch({
       if (!file.exists(paste0(input$glm_overlay_out, ".rds"))) {
         print(glue("{input$glm_overlay_out} does not exist"))
       }
@@ -1605,59 +1543,52 @@ server <- function(input, output, session) {
       loaded_data <- readRDS(paste0(input$glm_overlay_out, ".rds"))
       drawn_shapes(loaded_data$drawn_shapes)
       updateCheckboxGroupInput(session, "undo_shapes", choices = sort(do.call(rbind, loaded_data$drawn_shapes)$id), selected = loaded_data$undo_shapes)
-    }, error = function(e) {
-      message("Error in load_glm: ", e$message)
-    })
+
   })
   
   
   # Observe event to show factor consistency input
   observeEvent(input$Load_ave, {
-    tryCatch({
       show("factor_consistency")
-    }, error = function(e) {
-      message("Error in Load_ave: ", e$message)
-    })
   })
   
   # Observe changes and update select inputs
   observe({
-    tryCatch({
       updateSelectInput(session, "ft", choices = glm_ft_list())
       updateSelectInput(session, "factor_consistency", choices = c("none", "rnd_factor", fts))
       updateSelectInput(session, "filter_feature", choices = c("none", fts))
       updateSelectInput(session, "secondary_filter_feature", choices = c("none", fts))
       updateSelectInput(session, "tertiary_filter_feature", choices = c("none", fts))
-    }, error = function(e) {
-      message("Error in observe: ", e$message)
-    })
   })
   
   # Reactive expression to generate feature list
   glm_ft_list <- reactive({
-    tryCatch({
-      default_lst <- train %>% select(starts_with(fts)) %>% names %>% sort
-      if (input$ignore_base_pred == TRUE) {
-        return(default_lst)
-      } else {
-        req(file.exists(glue("{input$file_name_Training}.rds")))
-        req(base_model())
-        gbm_fts <- train %>% select(starts_with(config()$selected_fts)) %>% names
-        
-        lab <- lapply(default_lst, function(x) 
-          if (x %in% gbm_fts) { paste(x, "(xgb fitted)", " ") } else { x }) %>% unlist()
-        
-        return(lapply(default_lst, function(x) x) %>% setNames(., lab))
+    tryCatch(
+      {
+        default_lst <- train %>% select(starts_with(fts)) %>% names %>% sort
+        if (input$ignore_base_pred == TRUE) {
+          return(default_lst)
+        } else {
+          req(file.exists(glue("{input$file_name_Training}.rds")))
+          req(base_model())
+          gbm_fts <- train %>% select(starts_with(config()$selected_fts)) %>% names
+          
+          lab <- lapply(default_lst, function(x) 
+            if (x %in% gbm_fts) { paste(x, "(xgb fitted)", " ") } else { x }) %>% unlist()
+          
+          return(lapply(default_lst, function(x) x) %>% setNames(., lab))
+        }
+      },
+      error = function(e) {
+        # Handle the error (e.g., log it, show a message, etc.)
+        message("Error in glm_ft_list: ", e$message)
+        NULL  # Return NULL or some default value
       }
-    }, error = function(e) {
-      message("Error in glm_ft_list: ", e$message)
-      return(NULL)
-    })
+    )
   })
   
   # Reactive expression for sampling
   sampling <- reactive({
-    tryCatch({
       set.seed(1)
       
       base_pred <- if (input$ignore_base_pred == TRUE) {
@@ -1677,10 +1608,6 @@ server <- function(input, output, session) {
         mutate(pred = challenger, none = "NA") %>% sample_frac(input$samplesize)
       
       return(list(df_sample = df_sample))
-    }, error = function(e) {
-      message("Error in sampling: ", e$message)
-      return(NULL)
-    })
   })
   
   # Observe event to update filter UI based on selected feature
@@ -1688,7 +1615,6 @@ server <- function(input, output, session) {
     input$filter_feature
     input$Load_ave
   }, {
-    tryCatch({
       req(input$filter_feature)
       feature_data <- sampling()$df_sample[[input$filter_feature]]
       
@@ -1701,9 +1627,6 @@ server <- function(input, output, session) {
           checkboxGroupInput("feature_categories", "Select Categories:", choices = KT_dym_sort(unique(feature_data)), selected = KT_dym_sort(unique(feature_data)))
         })
       }
-    }, error = function(e) {
-      message("Error in filter_feature: ", e$message)
-    })
   })
   
   # Observe event to update secondary filter UI based on selected feature
@@ -1711,7 +1634,6 @@ server <- function(input, output, session) {
     input$secondary_filter_feature
     input$Load_ave
   }, {
-    tryCatch({
       req(input$secondary_filter_feature)
       feature_data <- sampling()$df_sample[[input$secondary_filter_feature]]
       
@@ -1724,9 +1646,6 @@ server <- function(input, output, session) {
           checkboxGroupInput("secondary_feature_categories", "Select Secondary Categories:", choices = KT_dym_sort(unique(feature_data)), selected = KT_dym_sort(unique(feature_data)))
         })
       }
-    }, error = function(e) {
-      message("Error in secondary_filter_feature: ", e$message)
-    })
   })
   
   # Observe event to update tertiary filter UI based on selected feature
@@ -1734,7 +1653,6 @@ server <- function(input, output, session) {
     input$tertiary_filter_feature
     input$Load_ave
   }, {
-    tryCatch({
       req(input$tertiary_filter_feature)
       feature_data <- sampling()$df_sample[[input$tertiary_filter_feature]]
       
@@ -1747,14 +1665,10 @@ server <- function(input, output, session) {
           checkboxGroupInput("tertiary_feature_categories", "Select Tertiary Categories:", choices = KT_dym_sort(unique(feature_data)), selected = KT_dym_sort(unique(feature_data)))
         })
       }
-    }, error = function(e) {
-      message("Error in tertiary_filter_feature: ", e$message)
-    })
   })
   
   # Reactive expression to calculate average results
   ave_results <- reactive({
-    tryCatch({
       df_sample <- sampling()$df_sample
       rnd_factor <- rep(1:4, as.integer(nrow(df_sample) / 4) + 1)
       df_sample$rnd_factor <- head(rnd_factor, nrow(df_sample))
@@ -1800,15 +1714,10 @@ server <- function(input, output, session) {
                                 band_ft = band_ft,
                                 nbreaks = input$overlay_nbreaks,
                                 band_method = input$glm_band_method))
-    }, error = function(e) {
-      message("Error in ave_results: ", e$message)
-      return(NULL)
-    })
   })
   
   # Reactive expression for cosmetic changes to the plot
   cosmetic <- reactive({
-    tryCatch({
       cosmetic_changes(p = ave_results()$ave_plot,
                        alpha_pt = input$alpha_pt,
                        alpha_line = input$alpha_line,
@@ -1819,16 +1728,11 @@ server <- function(input, output, session) {
                        control_yaxis = input$y_lim, 
                        upper_lim = input$y_interval[2],
                        lower_lim = input$y_interval[1])
-    }, error = function(e) {
-      message("Error in cosmetic: ", e$message)
-      return(NULL)
-    })
   })
   
   
   # Reactive expression for cosmetic changes to the plot
   cosmetic <- reactive({
-    tryCatch({
       cosmetic_changes(p = ave_results()$ave_plot,
                        alpha_pt = input$alpha_pt,
                        alpha_line = input$alpha_line,
@@ -1839,24 +1743,15 @@ server <- function(input, output, session) {
                        control_yaxis = input$y_lim, 
                        upper_lim = input$y_interval[2],
                        lower_lim = input$y_interval[1])
-    }, error = function(e) {
-      message("Error in cosmetic: ", e$message)
-      return(NULL)
-    })
   })
   
   # Render Plotly plot for average results
   output$avePlot <- renderPlotly({
-    tryCatch({
       plot <- cosmetic()$ave_plot
       if (is.null(plot)) {
         return(NULL)
       }
       plot
-    }, error = function(e) {
-      message("Error in renderPlotly for avePlot: ", e$message)
-      return(NULL)
-    })
   })
   
   # Download handler for average data
@@ -1865,19 +1760,13 @@ server <- function(input, output, session) {
       paste("ave_data-", Sys.Date(), ".xlsx", sep = "")
     },
     content = function(file) {
-      tryCatch({
         writexl::write_xlsx(list(ave_data = ave_results()$ave_df, smoothed_data = cosmetic()$smooth_data), file)
-      }, error = function(e) {
-        message("Error in downloadHandler for downloadData: ", e$message)
-      })
-    }
-  )
+    })
 
   ################### Performance ##############################
   
   # Event reactive to calculate model performance
   Performance <- eventReactive(input$performance, {
-    tryCatch({
       gc()
       print("Calc model performance")
       
@@ -1927,12 +1816,14 @@ server <- function(input, output, session) {
         
         lapply(seq(0.01,0.5,0.01), function(x) ifelse(abs(pred_diff -1 ) < x ,1,0  )) %>% 
           setNames(., as.character(seq(0.01,0.5,0.01))) %>% as.data.table() %>% summarise_all( list(mean)) %>% 
-          melt -> stability_test  
+          melt -> stability_test 
+        
+        colnames(stability_test) <- c("variable" , "value")
         stability_test %>% rename(threshold = variable) %>% ggplot(.,aes(x = threshold, y= value , group = 1)) + geom_line() + geom_point() +
           theme_light(base_size = 18)+
           theme(axis.text.x = element_text(angle = 40, vjust = 1, hjust=0.9)) + ylab("Proportion of trained predictions matched") -> stability_threshold
         
-        gbm_test_pred <- predict(gbm_model, newdata = as.matrix(test[test[[config()$weight]] > 0] %>% select(gbm_model$feature_name)), type = "response")
+        gbm_test_pred <- predict(gbm_model, newdata = as.matrix(test[test[[config()$weight]] > 0]%>% select(config()$selected_fts) %>% mltools::one_hot(.) %>% select(gbm_model$feature_names) ), type = "response")
         
         train_pred <- gbm_train_pred * train_overlays_adj
         test_pred <- gbm_test_pred * test_overlays_adj
@@ -2001,67 +1892,37 @@ server <- function(input, output, session) {
         stability_hist = stability_hist,
         stability_threshold = stability_threshold
       ))
-    }, error = function(e) {
-      message("Error in Performance: ", e$message)
-      return(NULL)
-    })
   })
   
   # Render Gini plot
   output$gini <- renderPlot({
-    tryCatch({
       Performance()$gini
-    }, error = function(e) {
-      message("Error in renderPlot for gini: ", e$message)
-      return(NULL)
-    })
   })
   
   # Render lift plot for training data
   output$lift_train <- renderPlotly({
-    tryCatch({
       Performance()$lift_train
-    }, error = function(e) {
-      message("Error in renderPlotly for lift_train: ", e$message)
-      return(NULL)
-    })
   })
   
   # Render lift plot for test data
   output$lift_test <- renderPlotly({
-    tryCatch({
       Performance()$lift_test
-    }, error = function(e) {
-      message("Error in renderPlotly for lift_test: ", e$message)
-      return(NULL)
-    })
   })
   
   # Render stability histogram
   output$stability1 <- renderPlot({
-    tryCatch({
       Performance()$stability_hist
-    }, error = function(e) {
-      message("Error in renderPlot for stability1: ", e$message)
-      return(NULL)
-    })
   })
   
   # Render stability threshold plot
   output$stability2 <- renderPlotly({
-    tryCatch({
       ggplotly(Performance()$stability_threshold)
-    }, error = function(e) {
-      message("Error in renderPlotly for stability2: ", e$message)
-      return(NULL)
-    })
   })
   
   
   ################### Model Comparison ##############################
   # Event reactive to load model files
   load_model_file <- eventReactive(input$Run_comparison, {
-    tryCatch({
       list(
         base = list(
           validation = readRDS(glue("{input$base_file}_validation_input.rds")),
@@ -2072,28 +1933,19 @@ server <- function(input, output, session) {
           train_result = readRDS(glue("{input$challenger_file}.rds"))
         )
       )
-    }, error = function(e) {
-      showNotification("Error loading files. Please check the file names and try again.", type = "error")
-      NULL
-    })
   })
   
   # Observe and update select input for common features
   observe({
-    tryCatch({
       req(load_model_file())
       
       same_fts <- intersect(load_model_file()$base$train_result$model_output$model$feature_names, 
                             load_model_file()$challenger$train_result$model_output$model$feature_names)
       updateSelectInput(session, "SHAP_common_ft", choices = same_fts)
-    }, error = function(e) {
-      message("Error in observe for SHAP_common_ft: ", e$message)
-    })
   })
   
   # Observe and generate SHAP comparison plot
   observe({
-    tryCatch({
       print("Running SHAP comparison")
       req(input$SHAP_common_ft)
       
@@ -2113,14 +1965,10 @@ server <- function(input, output, session) {
           SHAP_comp_plot
         }
       })
-    }, error = function(e) {
-      message("Error in observe for SHAP comparison: ", e$message)
-    })
   })
   
   # Observe and compare hyperparameters
   observe({
-    tryCatch({
       print("Running SHAP comparison")
       req(load_model_file())
       
@@ -2158,14 +2006,10 @@ server <- function(input, output, session) {
       output$stability_comparison <- renderPlot({
         compare_stability
       })
-    }, error = function(e) {
-      message("Error in observe for hyperparameters and importance comparison: ", e$message)
-    })
   })
   
   # Observe and run double lift comparison
   observe({
-    tryCatch({
       print("Running double lift comparison")
       req(load_model_file())
       
@@ -2181,14 +2025,10 @@ server <- function(input, output, session) {
       output$dl <- renderPlot({
         double_lift
       })
-    }, error = function(e) {
-      message("Error in observe for double lift comparison: ", e$message)
-    })
   })
   
   # Observe and run Gini comparison
   observe({
-    tryCatch({
       print("Running gini comparison")
       req(load_model_file())
       
@@ -2204,9 +2044,6 @@ server <- function(input, output, session) {
       output$gini_comparison <- renderPlot({
         compare_gini
       })
-    }, error = function(e) {
-      message("Error in observe for gini comparison: ", e$message)
-    })
   })
   
 

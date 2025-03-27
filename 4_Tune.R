@@ -22,6 +22,18 @@ tune_model <- function(fts,
   # Garbage collection to free up memory
   gc()
   
+  # Check data types of columns in train
+  invalid_cols <- list()
+  for(x in names(train %>% select(fts))){
+    if(!any(class(train[[x]])  %in% c("numeric", "factor", "integer") )){
+      invalid_cols[[x]] = class(train[[x]])
+    }
+  }
+  
+  if (length(invalid_cols)>0) {
+    print(invalid_cols)
+    stop(paste("Error: The train data contains columns with invalid data types(" , names(invalid_cols),  "). Only numeric, factor, and integer types are allowed." ))
+  }
   # Extract model specifications
   weight <- model_spec[[model]]$exposure
   response <- model_spec[[model]]$response
@@ -34,15 +46,12 @@ tune_model <- function(fts,
   train_weight <- train[[weight]]
   
   # Create training and validation samples
-  sample_result <- tryCatch({
+  sample_result <- 
     if (kfold > 0) {
       KT_create_sample(df = train, weight = train_weight, y = train_y, kfold = kfold)
     } else {
       KT_create_sample(df = train, weight = train_weight, y = train_y, train_validate_split = train_validate_ratio)
     }
-  }, error = function(e) {
-    stop("Error in creating training and validation samples: ", e$message)
-  })
   
   # Adjust min_child_weight based on the length of training weights
   min_child_weight <- min_child_weight * length(sample_result$train_weight)
@@ -64,7 +73,7 @@ tune_model <- function(fts,
   bounds <- lapply(bounds, function(x) if (x[1] == x[2]) NULL else x) %>% setNames(names(bounds)) %>% compact()
   
   # Perform Bayesian tuning with cross-validation or train-validate split
-  result <- tryCatch({
+  result <- 
     if (kfold > 0) {
       KT_xgb_baysian_tune(
         train = sample_result$train %>% select(fts),
@@ -106,13 +115,7 @@ tune_model <- function(fts,
         initPoints = initPoints
       )
     }
-  }, error = function(e) {
-    stop("Error in Bayesian tuning: ", e$message)
-  })
-  
-  # Garbage collection to free up memory
   gc()
   
   return(result)
 }
-

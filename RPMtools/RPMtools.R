@@ -997,7 +997,7 @@ KT_xgb_train <- function(train , # train data including fts only
                          seed = 1) {
   t0 <- Sys.time()
   
-  train_mat <- xgb.DMatrix(data = as.matrix(mltools::one_hot(train )  ),
+  train_mat <- xgb.DMatrix(data = as.matrix(mltools::one_hot(train %>% droplevels() )   ),
                            label = train_y,
                            weight = train_weight,
                            missing=NA)
@@ -1016,7 +1016,7 @@ KT_xgb_train <- function(train , # train data including fts only
     early_stopping_rounds = early_stopping_rounds
   }
     
-    test_mat <- xgb.DMatrix(data = as.matrix(mltools::one_hot(validate  )),
+    test_mat <- xgb.DMatrix(data = as.matrix(mltools::one_hot(validate %>% droplevels())),
                             label = validate_y,
                             weight = validate_weight,
                             missing = NA)
@@ -1082,7 +1082,7 @@ KT_xgb_cv <- function(train,
                       verbose =1,
                       nthread=  max(floor(parallel::detectCores()*2/3),1)){
   
-  train_mat <- xgb.DMatrix(data = as.matrix(mltools::one_hot(train)),
+  train_mat <- xgb.DMatrix(data = as.matrix(mltools::one_hot(train %>% droplevels())),
                            label = train_y,
                            weight = train_weight,
                            missing = NA)
@@ -1325,9 +1325,9 @@ KT_xgb_baysian_tune = function(train ,
                 best_params = best_params))
 }
 
-KT_xgb_explain = function(model,  pred_data  ,sample_size = 12000){
+KT_xgb_explain = function(model,  pred_data  ,sample_size = 10000){
   # browser()
-  pred_data = as.matrix(mltools::one_hot(pred_data )   )
+  pred_data = as.matrix(mltools::one_hot(pred_data %>% droplevels())   )
   
   print("Run importance metric")
   interactions(xgb_model =  model,data =  pred_data, option = "interactions") -> interaction_gain
@@ -1378,7 +1378,7 @@ KT_xgb_explain = function(model,  pred_data  ,sample_size = 12000){
     rename(ft = x2, interaction = variable) %>%
     arrange(-value)-> X_importance
   
-  
+  print("complete explaining model")
   return(list(main_effect = list(pred_data_main_effect=pred_data_main_effect,
                                  shap_main_effect=shap_main_effect) ,
               interaction= list(pred_data_interaction=pred_data_interaction,
@@ -1414,8 +1414,8 @@ KT_Boruta <- function(train , train_y , weight, max_Runs =100,eval_metric='gamma
                 
                 nrounds = nrounds)
   set.seed(1)
-  ohe_factors <- train %>% select_if(is.factor) %>% names
-  xgb.boruta=Boruta(x= train %>% mltools::one_hot(.),
+  factors <- train %>% select_if(is.factor) %>% names
+  xgb.boruta=Boruta(x= train %>% droplevels() %>% mltools::one_hot(.),
                     y=train_y,
                     weight = weight,
                     maxRuns=max_Runs,
@@ -1435,7 +1435,6 @@ KT_Boruta <- function(train , train_y , weight, max_Runs =100,eval_metric='gamma
   boruta_dec=attStats(xgb.boruta)
  
   # browser()
-  print("gc here")
   gc()
   
   imp_features=row.names(boruta_dec)[which(boruta_dec$decision!="Rejected")]
@@ -1463,9 +1462,12 @@ KT_Boruta <- function(train , train_y , weight, max_Runs =100,eval_metric='gamma
     })
   }
   
-  selected_fts <- remove_last_underscore(shap.feat) %>% unique
   # browser()
-  KT_xgb_train(train= train %>% select(starts_with(selected_fts)),
+  factors <- intersect(factors , remove_last_underscore(shap.feat) %>% unique)
+  ohe_fts <- shap.feat[grepl(pattern =  paste0("^", factors, collapse = "|"), x =  shap.feat)]
+  B_fts<-lapply(shap.feat, function(x) if (x %in% ohe_fts){remove_last_underscore(x)}else{ x}) %>% unlist() %>% as.vector() %>% unique 
+  
+  KT_xgb_train(train= train %>% select(B_fts),
                train_y = train_y,
                train_weight = weight,
                params = params,
@@ -1474,7 +1476,7 @@ KT_Boruta <- function(train , train_y , weight, max_Runs =100,eval_metric='gamma
   
   
   
-  shap_sample <- train %>% mltools::one_hot(.)  %>% sample_n(min(nrow(train) , 10000)) %>% select(model$feature_names)
+  shap_sample <- train %>% droplevels() %>%  mltools::one_hot(.)  %>% sample_n(min(nrow(train) , 10000)) %>% select(model$feature_names)
   sv <- shap.values(xgb_model =model ,X_train = as.matrix( shap_sample))
   sapply(sv$shap_score , function(x) KT_quantile_clip(x,0.01,0.99)) %>% as.data.table() ->sv
   shap.plot.summary.wrap2(shap_score = sv, 
@@ -1483,8 +1485,8 @@ KT_Boruta <- function(train , train_y , weight, max_Runs =100,eval_metric='gamma
   
   list(Boruta_p=Boruta_p , 
        SHAP_imp_plot=SHAP_imp_plot, 
-       selected_fts = selected_fts     ) -> boruta_result
-
+       selected_fts = B_fts     ) -> boruta_result
+ gc()
   print(glue("Boruta total run time {Sys.time() - t0}")) 
   
   return(boruta_result)
@@ -2845,6 +2847,112 @@ KT_create_sample <- function(df , weight, y, kfold , train_validate_split= 0.8){
   gc()
 }
 
+# Function to calculate the mode of a vector
+KT_get_mode <- function(v, bins = 10) {
+  # Remove NA and infinite values
+  v <- v[is.finite(v)]
+  v <- na.omit(v)
+  
+  # Handle character or factor vectors
+  if (is.character(v) || is.factor(v)) {
+    uniqv <- unique(v)
+    return(uniqv[which.max(tabulate(match(v, uniqv)))])
+    
+    # Handle numeric vectors
+  } else if (is.numeric(v)) {
+    if (length(unique(v)) > bins) {
+      breaks <- seq(min(v), max(v), length.out = bins + 1)
+      bin_counts <- cut(v, breaks, include.lowest = TRUE)
+      return(levels(bin_counts)[which.max(tabulate(bin_counts))])
+    } else {
+      uniqv <- unique(v)
+      return(uniqv[which.max(tabulate(match(v, uniqv)))])
+    }
+    
+    # Handle logical vectors
+  } else if (is.logical(v)) {
+    uniqv <- unique(v)
+    return(uniqv[which.max(tabulate(match(v, uniqv)))])
+    
+    # Handle date/time vectors
+  } else if (inherits(v, c("IDate", "Date", "POSIXct"))) {
+    uniqv <- unique(v)
+    return(uniqv[which.max(tabulate(match(v, uniqv)))])
+    
+    # Unsupported data type
+  } else {
+    stop("Unsupported data type")
+  }
+}
+
+KT_summarise_dataframe <- function(df) {
+  gc()  # Garbage collection to free up memory
+  
+  df <- df %>% 
+    mutate_if(is.character, ~ na_if(., ""))  # Replace empty strings with NA
+  
+  summary <- data.frame(
+    Feature = character(),
+    Data_Type = character(),
+    Min = character(),
+    Max = character(),
+    Mode = character(),
+    Proportion_Missing = numeric(),
+    
+    Unique_Values = numeric(),
+    Levels = character(),
+    
+    stringsAsFactors = FALSE
+  )
+  
+
+    for (col in colnames(df)) {
+      data_type <- class(df[[col]])
+      col_data <- df[[col]]
+      
+      if (any(data_type %in% c("numeric", "integer"))) {
+        min_val <- as.character(round(min(col_data, na.rm = TRUE), 3))
+        max_val <- as.character(round(max(col_data, na.rm = TRUE), 3))
+        mode_val <- as.character(round(as.numeric(KT_get_mode(col_data)), 3))
+        levels_val <- NA
+      } else if (any(data_type %in% c("factor", "character"))) {
+        min_val <- NA
+        max_val <- NA
+        mode_val <- as.character(KT_get_mode(col_data))
+        levels_val <- paste(levels(as.factor(col_data)), collapse = ", ")
+      } else if (any(data_type %in% c("POSIXct", "IDate", "Date"))) {
+        min_val <- as.character(as.Date(min(col_data, na.rm = TRUE)))
+        max_val <- as.character(as.Date(max(col_data, na.rm = TRUE)))
+        mode_val <- as.character(as.Date(KT_get_mode(col_data)))
+        levels_val <- NA
+      } else {
+        min_val <- NA
+        max_val <- NA
+        mode_val <- NA
+        levels_val <- NA
+      }
+      
+      proportion_missing <- mean(is.na(col_data))
+      unique_values <- length(unique(col_data))
+      
+      summary <- rbind(summary, data.frame(
+        Feature = col,
+        Data_Type = data_type,
+        Min = min_val,
+        Max = max_val,
+        Mode = mode_val,
+        Proportion_Missing = proportion_missing,
+        Unique_Values = unique_values,
+        Levels = levels_val
+      ))
+    }
+  
+  return(summary)
+}
+
+KT_replace_special_chars <- function(x) {
+  gsub("[^[:alnum:]_]", "_", x)
+}
 # Function to return the imputed value (mode)
 # KT_impute_mode_value <- function(vec) {
 #   if (any(is.na(vec))) {

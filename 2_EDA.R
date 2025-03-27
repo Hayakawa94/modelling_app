@@ -11,20 +11,18 @@ create_EDA_agg <- function(ft = 1,
                            interaction_nbreaks = 30,
                            ft_band_type = "equal",
                            interaction_band_type = "quantile") {
-  tryCatch({
-    # Garbage collection to free up memory
     gc()
     
     # Banding the feature if it is numeric and has more than 5 unique values
     ft <- if (is.numeric(ft) & length(unique(ft)) > 5) {
-      band_data(x = ft, nbreaks = ft_nbreaks, method = ft_band_type)
+      KT_band_data(x = ft, nbreaks = ft_nbreaks, method = ft_band_type)
     } else {
       ft
     }
     
     # Banding the interaction if it is numeric and has more than 4 unique values
     interaction <- if (is.numeric(interaction) & length(unique(interaction)) > 4) {
-      band_data(x = interaction, nbreaks = interaction_nbreaks, method = interaction_band_type)
+      KT_band_data(x = interaction, nbreaks = interaction_nbreaks, method = interaction_band_type)
     } else {
       interaction
     }
@@ -42,10 +40,6 @@ create_EDA_agg <- function(ft = 1,
     gc()
     
     return(agg_data)
-  }, error = function(e) {
-    message("Error in create_EDA_agg: ", e$message)
-    return(NULL)
-  })
 }
 
 # Function to plot EDA data
@@ -58,8 +52,7 @@ EDA_plot <- function(agg_df,
                      ft_name = "x",
                      interaction_name = "y",
                      smooth_strength = 0.7) {
-  tryCatch({
-    # Garbage collection to free up memory
+
     gc()
     
     # Create the plot
@@ -78,20 +71,16 @@ EDA_plot <- function(agg_df,
     if (smooth_strength > 0) {
       p <- p + geom_smooth(aes(y = y, color = interaction), method = "loess", span = smooth_strength, se = FALSE)
     }
-    
-    # Garbage collection to free up memory
+
     gc()
     
     return(p)
-  }, error = function(e) {
-    message("Error in EDA_plot: ", e$message)
-    return(NULL)
-  })
+
 }
 
 # Custom rounding function
 custom_round <- function(x, digits = 2) {
-  tryCatch({
+ 
     sapply(x, function(val) {
       if (abs(val) < 1) {
         return(signif(val, digits))
@@ -99,8 +88,5 @@ custom_round <- function(x, digits = 2) {
         return(round(val, digits))
       }
     })
-  }, error = function(e) {
-    message("Error in custom_round: ", e$message)
-    return(NULL)
-  })
+
 }

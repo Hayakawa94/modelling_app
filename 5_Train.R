@@ -1,6 +1,3 @@
-source("H:/Restricted Share/DA P&U/Tech Modelling/Users/Khoa/RPMtools/RPMtools.R")
-
-
 train_model <- function(fts,
                         model,
                         train,
@@ -15,6 +12,19 @@ train_model <- function(fts,
                         ...) {
   # Garbage collection to free up memory
   gc()
+  # Check data types of columns in train
+  # browser()
+  invalid_cols <- list()
+  for(x in names(train %>% select(fts))){
+    if(!any(class(train[[x]])  %in% c("numeric", "factor", "integer") )){
+      invalid_cols[[x]] = class(train[[x]])
+    }
+  }
+  
+  if (length(invalid_cols)>0) {
+    print(invalid_cols)
+    stop(paste("Error: The train data contains columns with invalid data types(" , names(invalid_cols),  "). Only numeric, factor, and integer types are allowed." ))
+  }
   
   # Extract model specifications
   weight <- model_spec[[model]]$exposure
@@ -28,15 +38,12 @@ train_model <- function(fts,
   train_weight <- train[[weight]]
   
   # Create training and validation samples
-  sample_result <- tryCatch({
+  sample_result <- 
     if (kfold > 0) {
       KT_create_sample(df = train, weight = train_weight, y = train_y, kfold = kfold)
     } else {
       KT_create_sample(df = train, weight = train_weight, y = train_y, train_validate_split = train_validate_ratio)
     }
-  }, error = function(e) {
-    stop("Error in creating training and validation samples: ", e$message)
-  })
   
   # Adjust min_child_weight based on the length of training weights
   min_child_weight <- min_child_weight * length(sample_result$train_weight)
@@ -52,7 +59,7 @@ train_model <- function(fts,
   nthread <- if (parallel) detectCores() else -1
   
   # Train the model using cross-validation or train-validate split
-  train_result <- tryCatch({
+  train_result <- 
     if (kfold > 0) {
       KT_xgb_cv(
         train = sample_result$train %>% select(fts),
@@ -76,26 +83,15 @@ train_model <- function(fts,
         seed = seed
       )
     }
-  }, error = function(e) {
-    stop("Error in training the model: ", e$message)
-  })
   
   # Return predictions only if specified
   if (return_pred_only) {
-    return(predict(train_result$model, newdata = as.matrix(train %>% select(fts)), type = "response"))
+    return(predict(train_result$model, newdata = as.matrix(mltools::one_hot(train %>% select(fts))  %>%  select(train_result$model$feature_names)), type = "response"))
   } else {
-    # Explain the model and generate predictions
-    explain_result <- tryCatch({
-      KT_xgb_explain(model = train_result$model, pred_data = sample_result$train %>% select(fts))
-    }, error = function(e) {
-      stop("Error in explaining the model: ", e$message)
-    })
     
-    pred <- tryCatch({
-      predict(train_result$model, newdata = as.matrix(mltools::one_hot(train %>% select(fts))), type = "response")
-    }, error = function(e) {
-      stop("Error in generating predictions: ", e$message)
-    })
+    # Explain the model and generate predictions
+    explain_result <- KT_xgb_explain(model = train_result$model, pred_data = sample_result$train %>% select(fts))
+    pred <- predict(train_result$model, newdata = as.matrix(mltools::one_hot(train %>% select(fts))  %>%  select(train_result$model$feature_names)), type = "response")
     
     # Return the results including importance plots and SHAP values
     return(list(
@@ -117,12 +113,10 @@ train_model <- function(fts,
       ),
       model = train_result$model,
       pred = pred,
-      pmml_fmap = r2pmml::as.fmap(as.data.table(sample_result$train %>% select(fts)))
+      pmml_fmap = r2pmml::as.fmap(as.data.table(sample_result$train %>% select(fts)  %>% droplevels()))
     ))
   }
   
   # Garbage collection to free up memory
   gc()
 }
-
-
