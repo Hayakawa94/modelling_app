@@ -1456,16 +1456,22 @@ KT_Boruta <- function(train , train_y , weight, max_Runs =100,eval_metric='gamma
     geom_boxplot()+theme_light(base_size = 18) + theme(legend.position = "bottom") ->Boruta_p
   
   Boruta_p$data %>% group_by(variable) %>% summarise(gain = mean(value)) %>% arrange(-gain) %>% select(variable) %>% pull %>% as.vector -> shap.feat
-  remove_last_underscore <- function(vector) {
-    sapply(vector, function(text) {
-      sub("_([^_]*)$", "", text)
-    })
-  }
+
   
-  # browser()
-  factors <- intersect(factors , remove_last_underscore(shap.feat) %>% unique)
-  ohe_fts <- shap.feat[grepl(pattern =  paste0("^", factors, collapse = "|"), x =  shap.feat)]
-  B_fts<-lapply(shap.feat, function(x) if (x %in% ohe_fts){remove_last_underscore(x)}else{ x}) %>% unlist() %>% as.vector() %>% unique 
+  
+  # Create a logical vector indicating which elements in shap.feat match the pattern
+  matches <- grepl(pattern = paste0("^", factors, collapse = "|"), x = shap.feat)
+  
+  # Subset shap.feat to include only the matching elements
+  selected_shap_feat <- shap.feat[matches]
+  
+  # Identify the matching factors in the same order as shap.feat, including duplicates
+  matching_factors <- lapply(selected_shap_feat, function(feat) {
+    factor <- factors[sapply(factors, function(f) grepl(paste0("^", f), feat))]
+    return(factor)
+  }) %>% setNames(selected_shap_feat)
+  
+  B_fts<-lapply(shap.feat, function(x) if (x %in% names(matching_factors)){matching_factors[[x]]}else{ x}) %>% unlist() %>% as.vector() %>% unique 
   
   KT_xgb_train(train= train %>% select(B_fts),
                train_y = train_y,
@@ -2951,8 +2957,21 @@ KT_summarise_dataframe <- function(df) {
 }
 
 KT_replace_special_chars <- function(x) {
-  gsub("[^[:alnum:]_]", "_", x)
+  # Replace special characters with underscores
+  x <- gsub("[^[:alnum:]_]", "_", x)
+  
+  # Get the last character of the string
+  last_char <- tail(strsplit(x, NULL)[[1]], 1)
+  
+  # Check if the last character is a letter
+  if (grepl("[[:alpha:]]", last_char)) {
+    return(x)
+  } else {
+    return(sub(".$", "", x))
+  }
 }
+
+
 # Function to return the imputed value (mode)
 # KT_impute_mode_value <- function(vec) {
 #   if (any(is.na(vec))) {
