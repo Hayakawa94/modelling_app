@@ -4,7 +4,7 @@ list.of.packages <- c('tidyverse',	'odbc',	'dbplyr',	'data.table',	'CatEncoders'
                       'resample',	'xgboost',	'caret',	'Matrix',	'magrittr' ,"data.table", "rmarkdown","pracma",
                       "RColorBrewer","cartogram","tmap","spdep","ggplot2","deldir","sp","purrr","RCurl","DescTools",
                       "readxl","openxlsx", "fastglm", "janitor", "doParallel","dtplyr","EIX","DALEX" , "pbapply", 
-                      "patchwork","shiny" , "writexl","shiny.exe", "Boruta","shinyjs", "SHAPforxgboost", "GGally"  , "mltools")
+                      "patchwork","shiny" , "writexl","shiny.exe", "Boruta","shinyjs", "SHAPforxgboost", "GGally"  , "mltools" )
 
 new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
 
@@ -70,6 +70,7 @@ library(shinyjs)
 library(SHAPforxgboost)
 library(GGally)
 library(mltools)
+
 # library(geodaData)
 
 # library(SHAPforxgboost)
@@ -785,7 +786,7 @@ KT_plot_ave = function(n, ft,actual,pred, challenger,weight,factor_name,title,re
 
 ################################# Explain model ####################################
 # 
-# use_python("C:\\ProgramData\\anaconda3")
+
 # reticulate::py_run_file("H:\\Restricted Share\\DA P&U\\Tech Modelling\\Users\\Khoa\\RPMtools.py") # Compute SHAP and interactions
 
 # Must compute SHAP using the .py file above before plotting them
@@ -2892,10 +2893,10 @@ KT_get_mode <- function(v, bins = 10) {
 }
 
 KT_summarise_dataframe <- function(df) {
-  gc()  # Garbage collection to free up memory
+  gc() 
   
   df <- df %>% 
-    mutate_if(is.character, ~ na_if(., ""))  # Replace empty strings with NA
+    mutate_if(is.character, ~ na_if(., "")) 
   
   summary <- data.frame(
     Feature = character(),
@@ -2970,18 +2971,172 @@ KT_replace_special_chars <- function(x) {
     return(sub(".$", "", x))
   }
 }
+###### categorical encoding ########
 
 
-# Function to return the imputed value (mode)
-# KT_impute_mode_value <- function(vec) {
-#   if (any(is.na(vec))) {
-#     mode_value <- KT_calculate_mode(vec)
-#     return(mode_value)
-#   } else {
-#     return(NULL)  # No missing values to impute
-#   }
+# Frequency Encoding
+freq_encoding <- function(category_var, target, weight = NULL) {
+  df <- data.frame(category = category_var)
+  encoding <- as.data.frame(table(df$category))
+  colnames(encoding) <- c("category", "Freq_Encoded")
+  return(encoding)
+}
 
-# Example usage:
-# df <- read.csv('your_data.csv')
-# result <- perform_pca(df, n_components = 3)
-# print(result$principal_components)
+# Weight of Evidence (WoE) Encoding
+woe_encoding <- function(category_var, target, weight = NULL, smoothing = 0.01) {
+  df <- data.frame(category = category_var, target = target)
+  
+  grouped <- aggregate(target ~ category, data = df, FUN = function(x) c(sum = sum(x), count = length(x)))
+  grouped <- do.call(data.frame, grouped)  # Convert nested list columns
+  colnames(grouped) <- c("category", "sum_claims", "count")
+  
+  grouped$non_claims <- grouped$count - grouped$sum_claims
+  grouped$WoE <- log((grouped$non_claims + smoothing) / (grouped$sum_claims + smoothing))
+  
+  return(grouped[, c("category", "WoE")])
+}
+
+# Bayesian Target Encoding
+bayesian_target_encoding <- function(category_var, target, weight = NULL, alpha = 5) {
+  df <- data.frame(category = category_var, target = target)
+  
+  global_mean <- mean(df$target)
+  grouped <- aggregate(target ~ category, data = df, FUN = function(x) c(sum = sum(x), count = length(x)))
+  grouped <- do.call(data.frame, grouped)
+  colnames(grouped) <- c("category", "sum_claims", "count")
+  
+  grouped$Bayes_Encoded <- (grouped$sum_claims + alpha * global_mean) / (grouped$count + alpha)
+  
+  return(grouped[, c("category", "Bayes_Encoded")])
+}
+
+# K-Means Clustering on Categories
+kmeans_encoding <- function(category_var, target, weight = NULL, k = 3) {
+  df <- data.frame(category = category_var)
+  
+  # Convert to frequency encoding as input for K-Means
+  freq_encoding <- as.data.frame(table(df$category))
+  colnames(freq_encoding) <- c("category", "Freq")
+  
+  # Apply K-Means clustering
+  set.seed(42)
+  clusters <- kmeans(freq_encoding$Freq, centers = k)$cluster
+  freq_encoding$Cluster <- clusters
+  
+  return(freq_encoding[, c("category", "Cluster")])
+}
+
+
+# cat target embedding
+# Define the Python function outside the R function
+
+library(reticulate)
+KT_create_nn_embeddings_in_r <- function(df, categorical_vars, target, weight, embedding_dim = 2, epochs = 10, batch_size = 32, loss_function = 'mse') {
+  use_python("C:\\ProgramData\\anaconda3", required = TRUE)
+  # Define the Python function outside the R function
+  reticulate::py_run_string("
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.layers import Input, Embedding, Flatten, Concatenate, Dense
+from tensorflow.keras.models import Model
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+
+def prepare_data(df, categorical_vars):
+    '''Convert categorical variables to integer labels'''
+    encoders = {}
+    for var in categorical_vars:
+        encoder = LabelEncoder()
+        df[var] = encoder.fit_transform(df[var])
+        encoders[var] = encoder
+    return df, encoders
+
+def create_nn_embeddings(df, categorical_vars, target, weight, embedding_dim=2, epochs=10, batch_size=32, loss_function='mse', test_size=0.2, random_state=42):
+    try:
+        # Prepare data
+        df, encoders = prepare_data(df, categorical_vars)
+
+        # Split data into training and validation sets
+        train_df, val_df = train_test_split(df, test_size=test_size, random_state=random_state)
+
+        # Define inputs
+        inputs = []
+        embeddings = []
+
+        for var in categorical_vars:
+            vocab_size = df[var].nunique()
+            inp = Input(shape=(1,), name=var, dtype='int32')
+            emb = Embedding(input_dim=vocab_size, output_dim=int(embedding_dim), name=f'{var}_embedding')(inp)
+            emb = Flatten()(emb)
+            inputs.append(inp)
+            embeddings.append(emb)
+
+        # Concatenate embeddings
+        if len(embeddings) > 1:
+            x = Concatenate()(embeddings)
+        else:
+            x = embeddings[0]
+
+        x = Dense(8, activation='relu')(x)
+        output = Dense(1, activation='linear', name='output')(x)
+
+        # Define model
+        model = Model(inputs=inputs, outputs=output)
+        model.compile(optimizer='adam', loss=loss_function, metrics=['mae'])
+
+        # Convert inputs to list format
+        train_input_data = [train_df[var] for var in categorical_vars]
+        val_input_data = [val_df[var] for var in categorical_vars]
+
+        # Train model
+        model.fit(
+            x=train_input_data,
+            y=train_df[target],
+            sample_weight=train_df[weight],
+            validation_data=(val_input_data, val_df[target], val_df[weight]),
+            epochs=epochs,
+            batch_size=batch_size,
+            verbose=1
+        )
+
+        # Extract embeddings and add to DataFrame
+        for var in categorical_vars:
+            embedding_matrix = model.get_layer(f'{var}_embedding').get_weights()[0]
+            embedding_df = pd.DataFrame(embedding_matrix, columns=[f'{var}_emb_{i}' for i in range(int(embedding_dim))])
+            embedding_df[var] = embedding_df.index
+            df = df.merge(embedding_df, on=var, suffixes=('', f'_{var}_emb'))
+
+        # Map encoded values back to original values
+        for var, encoder in encoders.items():
+            df[var] = encoder.inverse_transform(df[var])
+
+        return df, encoders
+
+    except Exception as e:
+        print(f'An error occurred: {e}')
+        return None, None
+")
+  
+  if(length(categorical_vars) ==1) {
+    df$dummyzzzzzz = rep("A" , nrow(df))
+    categorical_vars = c(categorical_vars , "dummyzzzzzz")
+  }
+  
+  # Convert the DataFrame to a pandas DataFrame
+  df_py <- r_to_py(df)
+  
+  # Call the Python function
+  result <- py$create_nn_embeddings(df_py, c(categorical_vars), target, weight, as.integer(embedding_dim), as.integer(epochs), as.integer(batch_size), loss_function)
+  
+  # Extract the modified DataFrame and encoders from the result
+  df_modified <- result[[1]]
+  encoders <- result[[2]]
+  
+  # Convert the modified DataFrame back to R
+  df_modified_r <- py_to_r(df_modified) %>% select(!starts_with("dummyzzzzzz"))
+  
+  return(list(df = df_modified_r, encoders = encoders))
+  py_run_string("exit()")
+}

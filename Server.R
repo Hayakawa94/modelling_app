@@ -508,12 +508,6 @@ server <- function(input, output, session) {
   ################### Tune model ##############################
 
   
-  
-  
-  
-  
-  
-  
   tune_result <- eventReactive(input$tune, {
     tryCatch({
       print('Begin tuning model')
@@ -1155,7 +1149,7 @@ server <- function(input, output, session) {
     }
   )
   
-  # Observe and load training data
+  # Observe and update SHAP inputs
   observe({
     req(input$load_Training || input$train)
     req(file.exists(glue("{input$file_name_Training}.rds")))
